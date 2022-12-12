@@ -1,8 +1,30 @@
 [package]
 name = "melia"
 version = "0.1.0"
+authors = ["Ash Walker <ash@ashwalker.net>"]
 edition = "2021"
+
+description = "A web server designed for ashwalker.net"
+readme = true
+repository = "https://github.com/SignalWalker/melia"
+license = "AGPL-3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio = { version = "^1", features = ["full"] }
+axum = { version = "^0.6", features = [ "http2", "macros", "headers" ] }
+
+clap = { version = "^4.0", features = [ "derive", "env" ] }
+
+thiserror = "^1"
+tracing = { version = "^0.1", features = [] }
+tracing-subscriber = { version = "^0.3", features = [ "time", "env-filter", "parking_lot", "local-time", "json" ] }
+
+time = { version = "^0.3", features = ["formatting", "local-offset", "macros"] }
+
+lazy_static = "^1"
+
+directories = "^4"
+
+serde = { version = "^1" }
