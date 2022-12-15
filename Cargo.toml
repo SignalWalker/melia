@@ -14,8 +14,11 @@ license = "AGPL-3.0"
 [dependencies]
 tokio = { version = "^1", features = ["full"] }
 axum = { version = "^0.6", features = [ "http2", "macros", "headers" ] }
+hyper = { version = "^0.14", features = [ "http1", "http2", "server", "runtime", "tcp", "stream" ] }
 
 clap = { version = "^4.0", features = [ "derive", "env" ] }
+
+url = { version = "^2", features = [ "serde" ] }
 
 thiserror = "^1"
 tracing = { version = "^0.1", features = [] }
@@ -25,6 +28,19 @@ time = { version = "^0.3", features = ["formatting", "local-offset", "macros"] }
 
 lazy_static = "^1"
 
+# for finding XDG directories
 directories = "^4"
 
+# serialization/deserialization
 serde = { version = "^1" }
+serde_derive = "^1"
+## configuration
+toml = "^0.5"
+
+# systemd
+systemd = {optional = true, version = "^0.10" }
+libsystemd = { optional = true, version = "^0.5" }
+
+[features]
+default = [ "systemd" ]
+systemd = [ "dep:libsystemd", "dep:systemd" ]
