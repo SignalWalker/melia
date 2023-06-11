@@ -1,3 +1,6 @@
+#![feature(impl_trait_in_assoc_type)]
+#![feature(async_fn_in_trait)]
+
 use clap::Parser;
 
 pub mod cli;
@@ -28,8 +31,7 @@ fn initialize_tracing(log_filter: &str, log_format: cli::LogFormat) {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let mut args = cli::Cli::parse();
     args.init_defaults();
 
@@ -41,10 +43,12 @@ async fn main() {
 
     tracing::debug!("config values: {:?}", &cfg);
 
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     match args.command.unwrap_or_default() {
         cli::Command::Ctl { .. } => {
-            todo!()
+            todo!("control commands")
         }
-        cli::Command::Daemon { .. } => daemon::run(cfg).await,
+        cli::Command::Daemon { .. } => runtime.block_on(daemon::run(cfg)),
     }
 }

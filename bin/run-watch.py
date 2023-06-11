@@ -44,7 +44,10 @@ def main() -> int:
 
 		eprint(f"watch trigger: {watch_trigger.name}")
 
-		check_cmd = ["cargo-watch", "-x", "check", "-s", f"touch {watch_trigger.name}"]
+		check_ignores = ["bin", "*.nix", "flake.lock", "justfile", "*.md"]
+		check_cmd = ["cargo-watch", "--why", "-x", "check", "-s", f"touch {watch_trigger.name}"]
+		for ignore in check_ignores:
+			check_cmd += ["-i", ignore]
 
 		if "MELIA_CTL_SOCKET" in os.environ:
 			sock = os.environ["MELIA_CTL_SOCKET"]
@@ -54,7 +57,7 @@ def main() -> int:
 		systemfd_cmd = ["systemfd", "--no-pid"]
 		for sock in args.sockets:
 			systemfd_cmd += ["-s", sock]
-		systemfd_cmd += ["--", "cargo-watch", "--no-gitignore", "-w", watch_trigger.name, "-x", "run -- daemon"]
+		systemfd_cmd += ["--", "cargo-watch", "--postpone", "-w", watch_trigger.name, "-x", "run -- daemon"]
 
 		eprint(f"check cmd: {check_cmd}", LogLevel.DEBUG)
 		eprint(f"systemfd cmd: {systemfd_cmd}", LogLevel.DEBUG)

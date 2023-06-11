@@ -188,14 +188,14 @@ impl Directories {
             match create_dirs {
                 DirectoryCreation::NonRecursive => {
                     match std::fs::DirBuilder::new().recursive(false).create(&res) {
-                        Ok(_) => {}
+                        Ok(_) => tracing::trace!("created {} directory at {:?}", ty, res),
                         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                         Err(e) => return Err(ConfigError::new(res, e)),
                     }
                 }
                 DirectoryCreation::Recursive => {
                     match std::fs::DirBuilder::new().recursive(true).create(&res) {
-                        Ok(_) => {}
+                        Ok(_) => tracing::trace!("created {} directory at {:?}", ty, res),
                         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                         Err(e) => return Err(ConfigError::new(res, e)),
                     }

@@ -12,8 +12,10 @@ pub struct TomlConfig {
 
 impl TomlConfig {
     pub fn from_path<'path>(path: &'path Path) -> Result<Self, ConfigError<'path>> {
-        toml::from_slice::<Self>(&std::fs::read(path).map_err(|e| ConfigError::new(path, e))?)
-            .map_err(|e| ConfigError::new(path, e))
+        toml::from_str::<Self>(
+            &std::fs::read_to_string(path).map_err(|e| ConfigError::new(path, e))?,
+        )
+        .map_err(|e| ConfigError::new(path, e))
     }
 }
 
