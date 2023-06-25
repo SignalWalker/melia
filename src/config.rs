@@ -1,17 +1,13 @@
-mod consts;
-pub use consts::*;
-mod toml_config;
-use serde::Deserialize;
-use toml_config::*;
-
+use serde::{Deserialize, Serialize};
 use std::{
-    ffi::OsStr,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::unix,
     path::{Path, PathBuf},
 };
+use url::Url;
 
-use crate::cli;
+mod consts;
+pub use consts::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigErrorVariant {
@@ -69,36 +65,44 @@ impl<'data> ConfigError<'data> {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Copy, Clone, Eq, PartialEq, Hash, clap::ValueEnum)]
-pub enum DirectoryCreation {
-    #[default]
-    #[serde(rename = "no")]
-    No,
-    #[serde(rename = "non-recursive")]
-    NonRecursive,
-    #[serde(rename = "recursive")]
-    Recursive,
-}
-
-impl std::fmt::Display for DirectoryCreation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::No => f.write_str("no"),
-            Self::NonRecursive => f.write_str("non-recursive"),
-            Self::Recursive => f.write_str("recursive"),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Config {
     pub directories: Directories,
     pub listen: Listen,
 }
 
-#[derive(Debug)]
+impl Config {
+    pub fn from_path<'path>(
+        path: impl AsRef<Path> + Clone + 'path,
+    ) -> Result<Self, ConfigError<'path>> {
+        toml::from_str::<Self>(
+            &std::fs::read_to_string(path.as_ref())
+                .map_err(|e| ConfigError::new(path.clone(), e))?,
+        )
+        .map_err(|e| ConfigError::new(path, e))
+    }
+
+    pub fn from_args(args: &crate::cli::Cli) -> Result<Self, ConfigError> {
+        let cfg_path = args
+            .config
+            .clone()
+            .or_else(|| args.config_dir.as_ref().map(|d| d.join("config.toml")))
+            .unwrap();
+
+        let mut res = Self::from_path(cfg_path)?;
+        res.directories.overwrite_with_cli(args);
+        if let Some(crate::cli::Command::Daemon { addresses }) = args.command.as_ref() {
+            res.listen.extend_from_urls(addresses.iter().cloned());
+        }
+
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Directories {
-    pub create_directories: DirectoryCreation,
     pub runtime: PathBuf,
     pub state: PathBuf,
     pub cache: PathBuf,
@@ -106,224 +110,163 @@ pub struct Directories {
     pub configuration: PathBuf,
 }
 
-#[derive(Debug)]
-pub struct Listen {
-    pub sockets: Vec<SocketAddr>,
-    pub unix: Vec<unix::net::SocketAddr>,
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+struct ListenToml {
+    pub addresses: Vec<url::Url>,
+    // pub inet: Vec<SocketAddr>,
+    // pub unix: Vec<unix::net::SocketAddr>,
 }
 
-impl Config {
-    pub fn from_args(args: &cli::Cli) -> Result<Self, ConfigError> {
-        let toml_cfg: Option<TomlConfig> = match args.config.as_ref() {
-            Some(cfg_path) => Some(TomlConfig::from_path(cfg_path)?),
-            None => None,
-        };
-        tracing::debug!("toml configuration values: {:?}", &toml_cfg);
-        let directories = Directories::from_args_and_toml(args, toml_cfg.as_ref())
-            .map_err(ConfigError::into_owned)?;
-        let listen = Listen::from_args_and_toml_and_runtime_dir(
-            args,
-            toml_cfg.as_ref(),
-            &directories.runtime,
-        )
-        .map_err(ConfigError::into_owned)?;
-        Ok(Self {
-            directories,
-            listen,
-        })
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(try_from = "Url", into = "Url")]
+pub struct UnixSocket {
+    pub path: PathBuf,
+    pub user: Option<String>,
+    pub group: Option<String>,
+    pub mode: u32,
+}
+
+impl TryFrom<Url> for UnixSocket {
+    type Error = &'static str;
+
+    fn try_from(addr: Url) -> Result<Self, Self::Error> {
+        if addr.scheme() != "unix" {
+            return Err("incorrect scheme");
+        }
+        todo!()
     }
 }
 
-impl Directories {
-    fn from_args_and_toml<'data>(
-        args: &'data cli::Cli,
-        cfg: Option<&'data TomlConfig>,
-    ) -> Result<Self, ConfigError<'data>> {
-        use std::env;
-        fn get_dir<'data>(
-            ty: &str,                                 // type of directory; shown in logs
-            cli: Option<impl AsRef<OsStr> + 'data>, // path provided by the user to the cli, if extant
-            cfg: Option<impl AsRef<OsStr> + 'data>, // path provided by the user in the config file, if extant
-            systemd: &'data str, // name of environment var set by systemd when running as a service unit
-            user_dir: Option<&'data Path>, // user directory, if found
-            system_default: impl AsRef<Path> + 'data, // system default directory
-            create_dirs: DirectoryCreation,
-        ) -> Result<PathBuf, ConfigError<'data>> {
-            let res = cli
-                .map_or_else(
-                    || {
-                        tracing::debug!(
-                            "{} directory not specified by user on the CLI; trying config.toml...",
-                            ty
-                        );
-                        cfg.map(|c| c.as_ref().to_owned())
-                    },
-                    |cli| Some(cli.as_ref().to_owned()),
-                )
-                .or_else(|| {
-                    tracing::debug!(
-                        "{} directory not specified in config.toml; trying ${} variable...",
-                        ty,
-                        systemd
-                    );
-                    env::var_os(systemd)
-                })
-                .or_else(|| {
-                    tracing::debug!(
-                        "systemd {} directory variable not found; trying XDG user directory...",
-                        ty
-                    );
-                    user_dir.map(|p| p.as_os_str().to_owned())
-                })
-                .map_or_else(
-                    || {
-                        tracing::debug!(
-                            "user {} directory not found; using default system directory",
-                            ty
-                        );
-                        PathBuf::from(system_default.as_ref())
-                    },
-                    Into::<PathBuf>::into,
-                );
-            match create_dirs {
-                DirectoryCreation::NonRecursive => {
-                    match std::fs::DirBuilder::new().recursive(false).create(&res) {
-                        Ok(_) => tracing::trace!("created {} directory at {:?}", ty, res),
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(ConfigError::new(res, e)),
-                    }
-                }
-                DirectoryCreation::Recursive => {
-                    match std::fs::DirBuilder::new().recursive(true).create(&res) {
-                        Ok(_) => tracing::trace!("created {} directory at {:?}", ty, res),
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                        Err(e) => return Err(ConfigError::new(res, e)),
-                    }
-                }
-                _ => {}
-            }
-            res.canonicalize().map_err(|e| ConfigError::new(res, e))
-        }
-        let (user_runtime, user_state, user_cache, user_logs, user_config) = {
-            match &*PROJECT_DIRS {
-                Some(p) => (
-                    p.runtime_dir(),
-                    p.state_dir(),
-                    Some(p.cache_dir()),
-                    None::<&Path>,
-                    Some(p.config_dir()),
-                ),
-                None => (None, None, None, None, None),
-            }
+impl From<UnixSocket> for Url {
+    fn from(sock: UnixSocket) -> Self {
+        todo!()
+    }
+}
+
+impl UnixSocket {
+    pub fn open(&self) -> unix::net::SocketAddr {
+        todo!()
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(from = "ListenToml", into = "ListenToml")]
+pub struct Listen {
+    pub http: Vec<SocketAddr>,
+    pub https: Vec<SocketAddr>,
+    pub unix: Vec<UnixSocket>,
+}
+
+impl From<ListenToml> for Listen {
+    fn from(value: ListenToml) -> Self {
+        let mut res = Self {
+            http: Vec::new(),
+            https: Vec::new(),
+            unix: Vec::new(),
         };
-        let (create_directories, cfg_runtime, cfg_state, cfg_cache, cfg_logs, cfg_config) =
-            match cfg {
-                Some(TomlConfig {
-                    directories: Some(dirs),
-                    ..
-                }) => (
-                    args.create_dirs
-                        .unwrap_or_else(|| dirs.create_directories.unwrap_or_default()),
-                    dirs.runtime.as_ref(),
-                    dirs.state.as_ref(),
-                    dirs.cache.as_ref(),
-                    dirs.logs.as_ref(),
-                    dirs.configuration.as_ref(),
-                ),
-                _ => (
-                    args.create_dirs.unwrap_or_default(),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
-        tracing::debug!("directory creation mode: {}", create_directories);
-        Ok(Self {
-            create_directories,
-            runtime: get_dir(
-                "runtime",
-                args.runtime_dir.as_ref(),
-                cfg_runtime,
-                "RUNTIME_DIRECTORY",
-                user_runtime,
-                SYSTEM_RUNTIME_DIR,
-                create_directories,
-            )?,
-            state: get_dir(
-                "state",
-                args.state_dir.as_ref(),
-                cfg_state,
-                "STATE_DIRECTORY",
-                user_state,
-                SYSTEM_STATE_DIR,
-                create_directories,
-            )?,
-            cache: get_dir(
-                "cache",
-                args.cache_dir.as_ref(),
-                cfg_cache,
-                "CACHE_DIRECTORY",
-                user_cache,
-                SYSTEM_CACHE_DIR,
-                create_directories,
-            )?,
-            logs: get_dir(
-                "logs",
-                args.logs_dir.as_ref(),
-                cfg_logs,
-                "LOGS_DIRECTORY",
-                user_logs,
-                SYSTEM_LOGS_DIR,
-                create_directories,
-            )?,
-            configuration: get_dir(
-                "configuration",
-                args.config_dir.as_ref(),
-                cfg_config,
-                "CONFIGURATION_DIRECTORY",
-                user_config,
-                SYSTEM_CONFIGURATION_DIR,
-                create_directories,
-            )?,
-        })
+        res.extend_from_urls(value.addresses);
+        res
     }
 }
 
 impl Listen {
-    fn from_args_and_toml_and_runtime_dir<'data>(
-        args: &'data cli::Cli,
-        cfg: Option<&'data TomlConfig>,
-        runtime_dir: &Path,
-    ) -> Result<Self, ConfigError<'data>> {
-        use url::{Host, Url};
-        // runtime_dir guaranteed to be absolute by Directories constructor
-        let runtime_url = Url::from_directory_path(runtime_dir).unwrap();
-
-        let mut sockets = Vec::new();
-        let mut unix = Vec::new();
-
-        for addr in (match args.command {
-            Some(cli::Command::Daemon { ref addresses }) => addresses.as_slice(),
-            _ => [].as_slice(),
-        })
-        .iter()
-        .chain(match cfg {
-            Some(TomlConfig {
-                listen: Some(TomlListen { addresses }),
-                ..
-            }) => addresses.as_slice(),
-            _ => [].as_slice(),
-        }) {
-            match addr.host() {
-                Some(Host::Domain(_)) => {
-                    return Err(ConfigError::from(ConfigErrorVariant::InvalidUrlHost))
-                }
-                Some(_) => sockets.push(addr.socket_addrs(|| None).unwrap().pop().unwrap()),
-                None => todo!(),
+    pub fn extend_from_urls<'url>(&mut self, urls: impl IntoIterator<Item = Url>) {
+        use url::Host;
+        fn addr_from_url(addr: &Url, default_port: u16) -> SocketAddr {
+            let ip = match addr.host() {
+                Some(Host::Ipv4(ip)) => IpAddr::V4(ip),
+                Some(Host::Ipv6(ip)) => IpAddr::V6(ip),
+                Some(Host::Domain(_)) => panic!("http listener host must be an ip address"),
+                None => panic!("no address specified for http listener"),
+            };
+            let port = addr.port().unwrap_or(default_port);
+            SocketAddr::new(ip, port)
+        }
+        for addr in urls {
+            match addr.scheme() {
+                "http" => self.http.push(addr_from_url(&addr, 80)),
+                "https" => self.https.push(addr_from_url(&addr, 443)),
+                "unix" => self.unix.push(UnixSocket::try_from(addr).unwrap()),
+                _ => panic!("incorrect url scheme"),
             }
         }
-        Ok(Self { sockets, unix })
+    }
+}
+
+impl Into<ListenToml> for Listen {
+    fn into(self) -> ListenToml {
+        let mut res = ListenToml {
+            addresses: Vec::with_capacity(self.http.len() + self.https.len() + self.unix.len()),
+        };
+        for http in self.http {
+            todo!()
+        }
+        for https in self.https {
+            todo!()
+        }
+        for unix in self.unix {
+            res.addresses.push(unix.into());
+        }
+        res
+    }
+}
+
+impl Default for Directories {
+    /// If our user has a home directory, use directories from that. Otherwise, use system
+    /// directories.
+    fn default() -> Self {
+        #[inline]
+        fn select(user: Option<impl AsRef<Path>>, system: &'static str) -> PathBuf {
+            user.map(|p| p.as_ref().to_owned())
+                .unwrap_or_else(|| PathBuf::from(system))
+        }
+        let user = ProjectDirs::get();
+        Self {
+            runtime: select(user.runtime, SYSTEM_RUNTIME_DIR),
+            state: select(user.state, SYSTEM_STATE_DIR),
+            cache: select(user.cache, SYSTEM_CACHE_DIR),
+            logs: select(user.logs, SYSTEM_LOGS_DIR),
+            configuration: select(user.configuration, SYSTEM_CONFIGURATION_DIR),
+        }
+    }
+}
+
+impl Directories {
+    /// Overwrite read values with values from the CLI.
+    pub fn overwrite_with_cli(&mut self, cli: &crate::cli::Cli) {
+        #[inline]
+        fn overwrite(field: &mut PathBuf, arg: &Option<PathBuf>) {
+            if let Some(arg) = arg {
+                *field = arg.clone();
+            }
+        }
+        overwrite(&mut self.runtime, &cli.runtime_dir);
+        overwrite(&mut self.state, &cli.state_dir);
+        overwrite(&mut self.cache, &cli.cache_dir);
+        overwrite(&mut self.logs, &cli.logs_dir);
+        overwrite(&mut self.configuration, &cli.config_dir);
+    }
+
+    pub fn create_dirs(&self, recursive: bool) -> std::io::Result<bool> {
+        fn create(builder: &std::fs::DirBuilder, path: impl AsRef<Path>) -> std::io::Result<bool> {
+            match builder.create(path) {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(e),
+            }
+        }
+        let builder = {
+            let mut b = std::fs::DirBuilder::new();
+            b.recursive(recursive);
+            b
+        };
+        let mut res = false;
+        res |= create(&builder, &self.runtime)?;
+        res |= create(&builder, &self.state)?;
+        res |= create(&builder, &self.cache)?;
+        res |= create(&builder, &self.logs)?;
+        res |= create(&builder, &self.configuration)?;
+        Ok(res)
     }
 }

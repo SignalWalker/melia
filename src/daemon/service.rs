@@ -3,11 +3,8 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body;
 use hyper::{service::Service, Method, Request, Response, StatusCode};
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
 
-type PinFuture<Output> = Pin<Box<dyn Future<Output = Output> + Send>>;
+// type PinFuture<Output> = Pin<Box<dyn Future<Output = Output> + Send>>;
 
 pub struct Svc;
 impl Service<Request<body::Incoming>> for Svc {

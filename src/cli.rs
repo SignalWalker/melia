@@ -1,8 +1,27 @@
-use std::path::{Path, PathBuf};
+use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
-use clap::{value_parser, Parser, Subcommand};
+#[derive(
+    Debug, Default, Deserialize, Serialize, Copy, Clone, Eq, PartialEq, Hash, clap::ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum DirectoryCreation {
+    #[default]
+    No,
+    NonRecursive,
+    Recursive,
+}
 
-use crate::config::DirectoryCreation;
+impl std::fmt::Display for DirectoryCreation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::No => f.write_str("no"),
+            Self::NonRecursive => f.write_str("non-recursive"),
+            Self::Recursive => f.write_str("recursive"),
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, clap::ValueEnum)]
 pub enum LogFormat {
@@ -42,29 +61,30 @@ pub struct Cli {
     #[arg(long, default_value_t = LogFormat::Pretty)]
     pub log_format: LogFormat,
     /// Path to the runtime directory
-    #[arg(long, env = "RUNTIME_DIRECTORY")]
-    pub runtime_dir: Option<String>,
+    #[arg(long, value_parser = parse_path, env = "RUNTIME_DIRECTORY")]
+    pub runtime_dir: Option<PathBuf>,
     /// Path to the state directory
-    #[arg(long, env = "STATE_DIRECTORY")]
-    pub state_dir: Option<String>,
+    #[arg(long, value_parser = parse_path, env = "STATE_DIRECTORY")]
+    pub state_dir: Option<PathBuf>,
     /// Path to the cache directory
-    #[arg(long, env = "CACHE_DIRECTORY")]
-    pub cache_dir: Option<String>,
+    #[arg(long, value_parser = parse_path, env = "CACHE_DIRECTORY")]
+    pub cache_dir: Option<PathBuf>,
     /// Path to the logs directory
-    #[arg(long, env = "LOGS_DIRECTORY")]
-    pub logs_dir: Option<String>,
+    #[arg(long, value_parser = parse_path, env = "LOGS_DIRECTORY")]
+    pub logs_dir: Option<PathBuf>,
     /// Path to the configuration directory
-    #[arg(long, env = "CONFIGURATION_DIRECTORY")]
-    pub config_dir: Option<String>,
+    #[arg(long, value_parser = parse_path, env = "CONFIGURATION_DIRECTORY")]
+    pub config_dir: Option<PathBuf>,
     /// Whether to create missing runtime/state/cache/logs/configuration directories.
     ///
     /// If `--create-dirs=recursive`, then directories will be created recursively (as with `mkdir -p`).
     #[arg(
         long,
+        default_value_t = DirectoryCreation::No,
         default_missing_value = "non-recursive",
         value_name = "RECURSIVITY"
     )]
-    pub create_dirs: Option<DirectoryCreation>,
+    pub create_dirs: DirectoryCreation,
     /// Path to the configuration file; must exist if specified.
     #[arg(short, long, value_parser = parse_path, env = "MELIA_CONFIG")]
     pub config: Option<PathBuf>,
@@ -91,7 +111,7 @@ pub enum Command {
         ///
         /// On Unix systems, Unix domain socket paths may also be used, in the format
         /// `unix:[//${root}/]${path}[?[user=${user}][group=${group}][mode=${mode}]]`, where query components are separated
-        /// by commans (,). Relative paths are resolved relative to the runtime directory (either as specified with
+        /// by commas (,). Relative paths are resolved relative to the runtime directory (either as specified with
         /// `runtime_dir` or in the configuration file). Ex. `unix:nginx?user=nginx,group=melia,mode=0660`
         /// would attempt to open a socket at `${runtime_dir}/nginx`, with the owning user `nginx`, group `melia`,
         /// and file permission mode `0660`.

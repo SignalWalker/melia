@@ -2,20 +2,12 @@ use crate::{
     config::Config,
     io::{SocketFormat, SystemdSocket, SystemdSocketType},
 };
-use hyper::{
-    server::conn::{http1, http2},
-    service::service_fn,
-};
-use std::future::Future;
+use hyper::{server::conn::http1, service::service_fn};
 use std::os::fd::FromRawFd;
+use std::sync::Arc;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::{TcpStream, UnixStream},
-    task::{JoinHandle, JoinSet, Unconstrained},
-};
-use tokio_stream::{
-    wrappers::{TcpListenerStream, UnixListenerStream},
-    Stream, StreamExt,
+    task::JoinSet,
 };
 use tokio_util::net::Listener;
 
@@ -36,6 +28,8 @@ pub async fn run(cfg: Config) -> Result<(), std::io::Error> {
     // let mut tasks: Vec<JoinHandle<Result<(), std::io::Error>>> = Vec::new();
     let mut tasks: JoinSet<Result<(), std::io::Error>> = JoinSet::new();
 
+    let cfg = Arc::new(cfg);
+
     for sock in systemd_sockets {
         match sock {
             SystemdSocket {
@@ -48,7 +42,7 @@ pub async fn run(cfg: Config) -> Result<(), std::io::Error> {
                     unix.set_nonblocking(true)?;
                     unix
                 })?;
-                tasks.spawn(accept(listener));
+                tasks.spawn(accept(cfg.clone(), listener));
                 // let task = tokio::task::spawn(accept(stream));
                 // tasks.push(task);
             }
@@ -62,7 +56,7 @@ pub async fn run(cfg: Config) -> Result<(), std::io::Error> {
                     tcp.set_nonblocking(true)?;
                     tcp
                 })?;
-                tasks.spawn(accept(listener));
+                tasks.spawn(accept(cfg.clone(), listener));
                 // tasks.join_next().await;
 
                 // let _ = accept(stream).await;
@@ -75,10 +69,13 @@ pub async fn run(cfg: Config) -> Result<(), std::io::Error> {
         }
     }
 
-    for sock in cfg.listen.sockets {
+    for sock in &cfg.listen.http {
         todo!()
     }
-    for unix in cfg.listen.unix {
+    for sock in &cfg.listen.https {
+        todo!()
+    }
+    for unix in &cfg.listen.unix {
         todo!()
     }
 
@@ -107,6 +104,7 @@ async fn accept<
     Conn: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
     Addr: std::fmt::Debug,
 >(
+    cfg: Arc<Config>,
     mut listener: impl Listener<Io = Conn, Addr = Addr> + std::fmt::Debug,
 ) -> Result<(), std::io::Error> {
     tracing::debug!(?listener, "accepting connections");
