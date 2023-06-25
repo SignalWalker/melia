@@ -31,7 +31,7 @@ fn initialize_tracing(log_filter: &str, log_format: cli::LogFormat) {
     }
 }
 
-fn main() {
+fn main() -> Result<(), std::io::Error> {
     let mut args = cli::Cli::parse();
     args.init_defaults();
 

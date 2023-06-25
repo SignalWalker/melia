@@ -5,6 +5,7 @@ use hyper::body;
 use hyper::{service::Service, Method, Request, Response, StatusCode};
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 type PinFuture<Output> = Pin<Box<dyn Future<Output = Output> + Send>>;
 

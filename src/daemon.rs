@@ -6,6 +6,7 @@ use hyper::{
     server::conn::{http1, http2},
     service::service_fn,
 };
+use std::future::Future;
 use std::os::fd::FromRawFd;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -16,13 +17,12 @@ use tokio_stream::{
     wrappers::{TcpListenerStream, UnixListenerStream},
     Stream, StreamExt,
 };
-
-use std::future::Future;
+use tokio_util::net::Listener;
 
 pub mod service;
 
 #[tracing::instrument(skip(cfg))]
-pub async fn run(cfg: Config) {
+pub async fn run(cfg: Config) -> Result<(), std::io::Error> {
     tracing::debug!("initializing daemon...");
 
     let systemd_sockets = crate::io::collect_systemd_fds().unwrap();
@@ -44,11 +44,11 @@ pub async fn run(cfg: Config) {
                 format: SocketFormat::Stream { listening: true },
             } => {
                 let listener = tokio::net::UnixListener::from_std(unsafe {
-                    std::os::unix::net::UnixListener::from_raw_fd(fd)
-                })
-                .unwrap();
-                let stream = UnixListenerStream::new(listener);
-                tasks.spawn(accept(stream));
+                    let unix = std::os::unix::net::UnixListener::from_raw_fd(fd);
+                    unix.set_nonblocking(true)?;
+                    unix
+                })?;
+                tasks.spawn(accept(listener));
                 // let task = tokio::task::spawn(accept(stream));
                 // tasks.push(task);
             }
@@ -58,11 +58,16 @@ pub async fn run(cfg: Config) {
                 format: SocketFormat::Stream { listening: true },
             } => {
                 let listener = tokio::net::TcpListener::from_std(unsafe {
-                    std::net::TcpListener::from_raw_fd(fd)
-                })
-                .unwrap();
-                let stream = TcpListenerStream::new(listener);
-                tasks.spawn(accept(stream));
+                    let tcp = std::net::TcpListener::from_raw_fd(fd);
+                    tcp.set_nonblocking(true)?;
+                    tcp
+                })?;
+                tasks.spawn(accept(listener));
+                // tasks.join_next().await;
+
+                // let _ = accept(stream).await;
+                // todo!();
+
                 // let task = tokio::task::spawn(accept(stream));
                 // tasks.push(task);
             }
@@ -93,27 +98,30 @@ pub async fn run(cfg: Config) {
     }
 
     tracing::trace!("complete");
+
+    Ok(())
 }
 
-async fn accept<Conn: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static>(
-    mut stream: impl Stream<Item = Result<Conn, std::io::Error>> + std::marker::Unpin + std::fmt::Debug,
+#[allow(unreachable_code)]
+async fn accept<
+    Conn: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug + 'static,
+    Addr: std::fmt::Debug,
+>(
+    mut listener: impl Listener<Io = Conn, Addr = Addr> + std::fmt::Debug,
 ) -> Result<(), std::io::Error> {
-    tracing::debug!(?stream, "accepting connections");
-    while let Some(conn) = stream.next().await {
-        let conn = match conn {
+    tracing::debug!(?listener, "accepting connections");
+    loop {
+        let (conn, addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = ?e, "failed to initialize stream");
                 continue;
             }
         };
-        tracing::debug!(connection = ?conn, "new connection");
-        tokio::task::spawn(async move {
-            tracing::trace!(connection = ?conn, "serving connection");
-            http1::Builder::new()
-                .serve_connection(conn, service_fn(service::respond))
-                .await
-        });
+        tracing::debug!(connection = ?conn, address = ?addr, "new connection");
+        tokio::task::spawn(
+            http1::Builder::new().serve_connection(conn, service_fn(service::respond)),
+        );
     }
     Ok(())
 }

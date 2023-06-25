@@ -10,8 +10,9 @@ repository = "https://github.com/SignalWalker/melia"
 license = "AGPL-3.0"
 
 [dependencies]
-tokio = { version = "^1", features = ["full", "rt-multi-thread"] }
+tokio = { version = "^1", features = ["full", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "^0.1", features = ["net"] }
+tokio-util = { version = "^0.7", features = ["net", "codec"] }
 futures-util = { version = "^0.3" }
 # axum = { version = "^0.6", features = [ "http1", "http2", "macros", "headers" ] }
 tower = { version = "^0.4", features = ["full"] }
