@@ -1,10 +1,10 @@
 #![feature(impl_trait_in_assoc_type)]
-#![feature(async_fn_in_trait)]
 
 use clap::Parser;
 
 pub mod cli;
 pub mod config;
+pub mod ctl;
 pub mod daemon;
 pub mod io;
 
@@ -43,11 +43,15 @@ fn main() -> Result<(), std::io::Error> {
 
     tracing::debug!("config values: {:?}", &cfg);
 
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
     match args.command.unwrap_or_default() {
-        cli::Command::Ctl { .. } => {
-            todo!("control commands")
+        cli::Command::Ctl { socket, command } => {
+            todo!()
+            //runtime.block_on(ctl::run(cfg, socket, command.unwrap_or_default()))
         }
         cli::Command::Daemon { .. } => runtime.block_on(daemon::run(cfg)),
     }

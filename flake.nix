@@ -1,81 +1,174 @@
 {
-  description = "A static site generator designed for ashwalker.net";
+  description = "";
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    alejandra = {
-      url = "github:kamadorueda/alejandra";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     crane = {
       url = "github:ipetkov/crane";
+    };
+    advisory-db = {
+      url = "github:rustsec/advisory-db";
+      flake = false;
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
   outputs = inputs @ {
     self,
     nixpkgs,
-    crane,
     ...
   }:
     with builtins; let
       std = nixpkgs.lib;
-      systems = attrNames crane.lib; # systems supported by crane
+
+      systems = attrNames inputs.crane.packages;
       nixpkgsFor = std.genAttrs systems (system:
         import nixpkgs {
           localSystem = builtins.currentSystem or system;
           crossSystem = system;
-          overlays = [self.overlays.default];
+          overlays = [inputs.rust-overlay.overlays.default];
         });
+
+      toolchainToml = fromTOML (readFile ./rust-toolchain.toml);
+      toolchainFor = std.mapAttrs (system: pkgs: pkgs.rust-bin.fromRustupToolchain toolchainToml.toolchain) nixpkgsFor;
+
+      craneFor = std.mapAttrs (system: pkgs: (inputs.crane.mkLib pkgs).overrideToolchain toolchainFor.${system}) nixpkgsFor;
+
+      stdenvFor = std.mapAttrs (system: pkgs: pkgs.stdenvAdapters.useMoldLinker pkgs.llvmPackages_latest.stdenv) nixpkgsFor;
+
+      commonArgsFor =
+        std.mapAttrs (system: pkgs: let
+          crane = craneFor.${system};
+        in {
+          src = crane.cleanCargoSource (crane.path ./.);
+          stdenv = stdenvFor.${system};
+          strictDeps = true;
+          nativeBuildInputs = with pkgs; [pkg-config];
+          buildInputs = with pkgs; [systemd];
+        })
+        nixpkgsFor;
+
+      cargoToml = fromTOML (readFile ./Cargo.toml);
+      name = cargoToml.package.metadata.crane.name or cargoToml.package.name or cargoToml.workspace.metadata.crane.name;
+      version = cargoToml.package.version or cargoToml.workspace.package.version;
+
+      metaFor =
+        std.mapAttrs (system: pkgs: let
+          lib = pkgs.lib;
+        in {
+          description = cargoToml.package.description or null;
+          homepage = cargoToml.package.repository or null;
+          license = cargoToml.package.license or [];
+          sourceProvenance = [lib.sourceTypes.fromSource];
+          mainProgram = name;
+          platforms = lib.platforms.linux;
+          maintainers = [
+            {
+              name = "Ash Walker";
+              email = "ashurstwalker@gmail.com";
+              github = "SignalWalker";
+              githubId = 7883605;
+              keys = [{fingerprint = "501A A952 63CF 564B 5E08 26A9 893F FE5C 7CDA 81A3";}];
+            }
+          ];
+        })
+        nixpkgsFor;
     in {
-      formatter = std.mapAttrs (system: pkgs: pkgs.default) inputs.alejandra.packages;
-      packages = std.genAttrs systems (system: let
-        crane = inputs.crane.lib.${system};
-        pkgs = nixpkgsFor.${system};
-      in {
-        default = self.packages.${system}.melia;
-        melia = crane.buildPackage {
-          src = crane.cleanCargoSource ./.;
-          meta = {
-            homepage = "https://github.com/SignalWalker/melia";
-            description = "A static site generator designed for ashwalker.net";
-            license = [std.licenses.agpl3Plus];
-          };
-        };
-      });
-      overlays.default = final: prev: {
-        melia = self.packages.${final.system}.melia;
-      };
+      formatter = std.mapAttrs (system: pkgs: pkgs.nixfmt-rfc-style) nixpkgsFor;
+      packages =
+        std.mapAttrs (system: pkgs: let
+          crane = craneFor.${system};
+          commonArgs = commonArgsFor.${system};
+          meta = metaFor.${system};
+        in {
+          default = self.packages.${system}.${name};
+          "${name}-artifacts" = crane.buildDepsOnly commonArgs;
+          ${name} = crane.buildPackage (commonArgs
+            // {
+              cargoArtifacts = self.packages.${system}."${name}-artifacts";
+              inherit meta;
+            });
+        })
+        nixpkgsFor;
+      checks =
+        std.mapAttrs (system: pkgs: let
+          crane = craneFor.${system};
+          commonArgs = commonArgsFor.${system};
+          cargoArtifacts = self.packages.${system}."${name}-artifacts";
+        in {
+          ${name} = pkgs.${name};
+          "${name}-clippy" = crane.cargoClippy (commonArgs
+            // {
+              inherit cargoArtifacts;
+            });
+          "${name}-coverage" = crane.cargoTarpaulin (commonArgs
+            // {
+              inherit cargoArtifacts;
+            });
+          "${name}-audit" = crane.cargoAudit (commonArgs
+            // {
+              pname = name;
+              inherit version;
+              inherit cargoArtifacts;
+              advisory-db = inputs.advisory-db;
+            });
+          "${name}-deny" = crane.cargoDeny (commonArgs
+            // {
+              inherit cargoArtifacts;
+            });
+        })
+        self.packages;
       apps =
         std.mapAttrs (system: pkgs: {
-          melia = {
+          ${name} = {
             type = "app";
-            program = "${pkgs.melia}/bin/melia";
+            program = "${pkgs.${name}}/bin/${pkgs.${name}.meta.mainProgram}";
           };
-          default = self.apps.${system}.melia;
+          default = self.apps.${system}.${name};
         })
         self.packages;
-      nixosModules.default = import nixos-module.nix;
       devShells =
-        std.mapAttrs (system: selfPkgs: let
-          pkgs = nixpkgsFor.${system};
-          shellPkgs = with pkgs; [just nushell cargo-watch python3 systemfd];
-          shellHook = ''
-            export RUST_BACKTRACE=1
-            export MELIA_LOG_FILTER="warn,melia=debug"
-          '';
+        std.mapAttrs (system: pkgs: let
+          selfPkgs = self.packages.${system};
+          toolchain = toolchainFor.${system}.override {
+            extensions = [
+              "rust-src"
+              "rust-analyzer"
+              "rustfmt"
+              "clippy"
+            ];
+          };
+          crane = (inputs.crane.mkLib pkgs).overrideToolchain toolchain;
+          stdenv = commonArgsFor.${system}.stdenv;
         in {
-          melia = pkgs.mkShell {
-            packages = shellPkgs;
-            inputsFrom = with pkgs; [melia];
-            inherit shellHook;
+          ${name} = (pkgs.mkShell.override {inherit stdenv;}) {
+            inputsFrom = (attrValues self.checks.${system}) ++ [selfPkgs.${name}];
+            packages =
+              [toolchain]
+              ++ (with pkgs; [
+                cargo-audit
+                cargo-license
+                cargo-dist
+
+                # for the automatic daemon rebuilder command
+                cargo-watch
+                systemfd
+                just
+                python3
+              ]);
+            shellHook = let
+              extraLdPaths =
+                pkgs.lib.makeLibraryPath (with pkgs; [
+                  ]);
+            in ''
+              export LD_LIBRARY_PATH="${extraLdPaths}:$LD_LIBRARY_PATH"
+            '';
+            env = {
+            };
           };
-          melia-no-inputs = pkgs.mkShell {
-            packages = shellPkgs;
-            inputsFrom = with pkgs; [];
-            inherit shellHook;
-          };
-          default = self.devShells.${system}.melia;
+          default = self.devShells.${system}.${name};
         })
-        self.packages;
+        nixpkgsFor;
     };
 }

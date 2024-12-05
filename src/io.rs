@@ -159,6 +159,7 @@ pub struct SystemdSocket {
     pub fd: RawFd,
     pub ty: SystemdSocketType,
     pub format: SocketFormat,
+    pub name: String,
 }
 
 impl SystemdSocket {
@@ -168,6 +169,7 @@ impl SystemdSocket {
                 fd,
                 ty: SystemdSocketType::INet,
                 format: SocketFormat::from_fd_inet(fd)?,
+                name: "http".into(),
             })
         } else if daemon::is_socket_unix(
             fd,
@@ -179,6 +181,7 @@ impl SystemdSocket {
                 fd,
                 ty: SystemdSocketType::Unix,
                 format: SocketFormat::from_fd_unix(fd)?,
+                name: "http".into(),
             })
         } else if daemon::is_fifo(fd, None::<&str>)? {
             Err(SystemdError::UnsupportedSocketType(SystemdSocketType::Fifo))

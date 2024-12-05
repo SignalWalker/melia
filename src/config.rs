@@ -29,7 +29,7 @@ pub struct ConfigError<'data> {
     variant: ConfigErrorVariant,
 }
 
-impl<'data> std::fmt::Debug for ConfigError<'data> {
+impl std::fmt::Debug for ConfigError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConfigError")
             .field("path", &self.path.as_ref().map(|p| p.as_ref().as_ref()))
@@ -38,7 +38,7 @@ impl<'data> std::fmt::Debug for ConfigError<'data> {
     }
 }
 
-impl<'data> From<ConfigErrorVariant> for ConfigError<'data> {
+impl From<ConfigErrorVariant> for ConfigError<'_> {
     fn from(variant: ConfigErrorVariant) -> Self {
         Self {
             path: None,
@@ -66,10 +66,11 @@ impl<'data> ConfigError<'data> {
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub directories: Directories,
     pub listen: Listen,
+    pub server: Server,
 }
 
 impl Config {
@@ -101,7 +102,7 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Directories {
     pub runtime: PathBuf,
     pub state: PathBuf,
@@ -111,7 +112,7 @@ pub struct Directories {
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ListenToml {
     pub addresses: Vec<url::Url>,
     // pub inet: Vec<SocketAddr>,
@@ -158,6 +159,12 @@ pub struct Listen {
     pub unix: Vec<UnixSocket>,
 }
 
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Server {
+    pub domain: String,
+}
+
 impl From<ListenToml> for Listen {
     fn from(value: ListenToml) -> Self {
         let mut res = Self {
@@ -171,7 +178,7 @@ impl From<ListenToml> for Listen {
 }
 
 impl Listen {
-    pub fn extend_from_urls<'url>(&mut self, urls: impl IntoIterator<Item = Url>) {
+    pub fn extend_from_urls(&mut self, urls: impl IntoIterator<Item = Url>) {
         use url::Host;
         fn addr_from_url(addr: &Url, default_port: u16) -> SocketAddr {
             let ip = match addr.host() {
@@ -194,18 +201,25 @@ impl Listen {
     }
 }
 
-impl Into<ListenToml> for Listen {
-    fn into(self) -> ListenToml {
+impl From<Listen> for ListenToml {
+    fn from(val: Listen) -> Self {
+        fn url_from_socketaddr(scheme: &'static str, addr: SocketAddr) -> Url {
+            let (host, port) = match addr {
+                SocketAddr::V4(addr) => (addr.ip().to_string(), addr.port()),
+                SocketAddr::V6(addr) => (format!("[{}]", addr.ip()), addr.port()),
+            };
+            Url::parse(&format!("{scheme}://{host}:{port}")).unwrap()
+        }
         let mut res = ListenToml {
-            addresses: Vec::with_capacity(self.http.len() + self.https.len() + self.unix.len()),
+            addresses: Vec::with_capacity(val.http.len() + val.https.len() + val.unix.len()),
         };
-        for http in self.http {
-            todo!()
+        for http in val.http {
+            res.addresses.push(url_from_socketaddr("http", http));
         }
-        for https in self.https {
-            todo!()
+        for https in val.https {
+            res.addresses.push(url_from_socketaddr("https", https));
         }
-        for unix in self.unix {
+        for unix in val.unix {
             res.addresses.push(unix.into());
         }
         res

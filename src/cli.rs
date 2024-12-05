@@ -43,7 +43,7 @@ impl std::fmt::Display for LogFormat {
 }
 
 fn parse_path(path: &str) -> Result<PathBuf, std::io::Error> {
-    Ok(PathBuf::from(path).canonicalize()?)
+    PathBuf::from(path).canonicalize()
 }
 
 #[derive(Parser, Debug)]
@@ -140,17 +140,18 @@ impl Default for Command {
     }
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Default)]
 #[command()]
 pub enum CtlCommand {
     /// Print the current configuration settings
     #[command()]
+    #[default]
     PrintCfg,
 }
 
 impl Cli {
     pub fn init_defaults(&mut self) {
-        if let None = self.command {
+        if self.command.is_none() {
             self.command.replace(Command::default());
         }
     }
